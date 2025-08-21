@@ -8,30 +8,60 @@ on:
 
 jobs:
   security-scan:
-    name: "1. Security Automation Scan"
+    name: "Security Scan: Code"
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Set up Python
+      - name: Install Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install security tools
         run: |
-          pip install bandit safety detect-secrets
+          pip install bandit
+          # Install Trivy
+          sudo apt-get update
+          sudo apt-get install -y wget apt-transport-https gnupg lsb-release
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+          echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee -a /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update
+          sudo apt-get install -y trivy
+          # Install Gitleaks
+          curl -sSfL https://raw.githubusercontent.com/gitleaks/gitleaks/master/install.sh | sh -s -- -b /usr/local/bin v8.18.0
 
       - name: Run Multi-Scanner Orchestrator
         run: |
-          python3 ./scripts/multi-scanner-orchestrator/security-scan.py --path ./application --format json
-        id: security-scan
+          python ./scripts/multi-scanner-orchestrator/security-scan.py --format text
+
+  iac-scan:
+    name: "Security Scan: IaC"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Trivy for IaC
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget apt-transport-https gnupg lsb-release
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+          echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee -a /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update
+          sudo apt-get install -y trivy
+
+      - name: Scan Terraform files
+        run: |
+          trivy config ./infrastructure/terraform/
 
   container-scan:
-    name: "2. Build & Container Scan"
+    name: "Security Scan: Container"
     runs-on: ubuntu-latest
-    needs: security-scan
+    needs: security-scan # Depends on code scan passing
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -39,31 +69,34 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build the Docker image
+      - name: Build application image
         run: docker build -t devsecops-app:latest ./application
 
-      - name: Scan for vulnerabilities with Trivy
+      - name: Scan container image
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: 'devsecops-app:latest'
-          format: 'sarif'
-          output: 'trivy-results.sarif'
+          scan-type: 'image'
+          scan-ref: 'devsecops-app:latest'
+          format: 'table'
+          exit-code: '1'
           severity: 'HIGH,CRITICAL'
 
-      - name: Upload Trivy scan results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v3
-        if: always()
-        with:
-          sarif_file: 'trivy-results.sarif'
-
-  iac-scan:
-    name: "3. IaC Security Scan"
+  deploy-preview:
+    name: "Deploy Preview"
     runs-on: ubuntu-latest
+    needs: [security-scan, iac-scan, container-scan] # All must pass
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Check Terraform files with TFSec
-        uses: aquasecurity/tfsec-action@master
-        with:
-          working-directory: './infrastructure/terraform'
+      - name: Terraform Init & Plan
+        run: |
+          cd infrastructure/terraform
+          terraform init
+          terraform plan
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Success
+        run: echo "✅ All security checks passed! Deployment can proceed."
