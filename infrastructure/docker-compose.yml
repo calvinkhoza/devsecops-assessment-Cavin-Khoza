@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  devsecops-app:
+    build:
+      context: ./application
+      target: runtime # Explicitly build the runtime stage
+    image: devsecops-app:latest
+    container_name: devsecops-app
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    # Security focused options:
+    read_only: true # Mounts the container's root filesystem as read-only
+    user: "appuser" # Explicitly run as the non-root user
+    security_opt:
+      - no-new-privileges:true # Prevents container processes from gaining new privileges
+    cap_drop: # Drop all capabilities
+      - ALL
+    networks:
+      - app-network
+
+# Define a network for isolation
+networks:
+  app-network:
+    driver: bridge
