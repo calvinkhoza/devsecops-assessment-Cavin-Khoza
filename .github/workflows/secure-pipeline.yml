@@ -34,9 +34,10 @@ jobs:
           # Install Gitleaks
           curl -sSfL https://raw.githubusercontent.com/gitleaks/gitleaks/master/install.sh | sh -s -- -b /usr/local/bin v8.18.0
 
+      # FIXED: Added the required --path argument to scan the current directory
       - name: Run Multi-Scanner Orchestrator
         run: |
-          python ./scripts/multi-scanner-orchestrator/security-scan.py --format text
+          python ./scripts/multi-scanner-orchestrator/security-scan.py --path . --format text
 
   iac-scan:
     name: "Security Scan: IaC"
