@@ -1,7 +1,6 @@
 # ==========================================
 # Multi-stage Dockerfile for React Application
-# Fully Secure, DevSecOps-ready
-# Works without package.json
+# DevSecOps Security Best Practices
 # ==========================================
 
 # Stage 1: Build React App
@@ -9,68 +8,61 @@
 FROM node:18-alpine AS builder
 
 LABEL maintainer="devsecops@company.com"
-LABEL stage="builder"
-LABEL security.scan="enabled"
 LABEL version="1.0.0"
+LABEL stage="builder"
 
-# Install essential tools
-RUN apk update && apk upgrade && apk add --no-cache \
-    dumb-init \
-    ca-certificates \
+# Install security updates and essential tools
+RUN apk update && apk upgrade && apk add --no-cache dumb-init ca-certificates \
     && rm -rf /var/cache/apk/*
 
-# Create non-root user
-RUN addgroup -g 1001 -S appgroup && \
-    adduser -S -D -H -u 1001 -s /sbin/nologin -G appgroup appuser
+# Create non-root user for build
+RUN addgroup -g 1001 -S appgroup && adduser -S -D -H -u 1001 -s /sbin/nologin -G appgroup appuser
 
 WORKDIR /app
 RUN chown appuser:appgroup /app
 
+# Switch to non-root user
 USER appuser
 
-# Copy package-lock.json only
+# Copy only package-lock.json (since package.json doesn't exist)
 COPY --chown=appuser:appgroup application/package-lock.json ./
 
-# Create dummy package.json so npm can install from lockfile
-RUN echo '{"name":"react-app","version":"1.0.0","private":true,"dependencies":{}}' > package.json
-
-# Install dependencies strictly from lockfile
+# Install dependencies from lock file
 RUN npm ci --ignore-scripts --no-audit --no-fund && npm cache clean --force
 
-# Copy the rest of the app
+# Copy rest of app
 COPY --chown=appuser:appgroup application/ ./
 
-# Build React app
+# Build React app for production
 RUN npm run build && rm -rf node_modules && npm cache clean --force
 
-# ==========================================
-# Stage 2: Production Runtime with Nginx
+# Stage 2: Runtime with Nginx
 # ==========================================
 FROM nginx:1.25-alpine AS runtime
 
 LABEL maintainer="devsecops@company.com"
-LABEL stage="runtime"
-LABEL security.scan="enabled"
 LABEL version="1.0.0"
+LABEL stage="runtime"
 
-# Install essential tools
-RUN apk update && apk upgrade && apk add --no-cache \
-    dumb-init \
-    ca-certificates \
-    wget \
+# Install security updates and essential tools
+RUN apk update && apk upgrade && apk add --no-cache dumb-init ca-certificates wget \
     && rm -rf /var/cache/apk/*
 
-# Create non-root user
-RUN addgroup -g 1001 -S appgroup && \
-    adduser -S -D -H -u 1001 -s /sbin/nologin -G appgroup appuser
+# Create non-root user for nginx
+RUN addgroup -g 1001 -S appgroup && adduser -S -D -H -u 1001 -s /sbin/nologin -G appgroup appuser
 
-# Remove default nginx content
+# Remove default nginx content and config
 RUN rm -rf /usr/share/nginx/html/* && rm -rf /etc/nginx/conf.d/default.conf
 
-# Copy built React app
+# Create necessary directories
+RUN mkdir -p /var/cache/nginx /tmp/nginx /var/log/nginx && \
+    chown -R appuser:appgroup /var/cache/nginx /tmp/nginx /var/log/nginx /usr/share/nginx/html && \
+    chmod -R 755 /var/cache/nginx /tmp/nginx /var/log/nginx
+
+# Copy React build from builder
 COPY --from=builder --chown=appuser:appgroup /app/build /usr/share/nginx/html
 
-# Nginx config with security headers and SPA routing
+# Create secure nginx configuration
 RUN cat > /etc/nginx/conf.d/default.conf << 'EOF'
 server {
     listen 8080;
@@ -129,7 +121,7 @@ server {
 }
 EOF
 
-# Configure nginx to run as non-root
+# Configure nginx non-root
 RUN sed -i 's/user  nginx;/user  appuser;/' /etc/nginx/nginx.conf && \
     sed -i 's|pid /var/run/nginx.pid;|pid /tmp/nginx/nginx.pid;|' /etc/nginx/nginx.conf && \
     sed -i '/worker_processes/a worker_rlimit_nofile 1024;' /etc/nginx/nginx.conf && \
