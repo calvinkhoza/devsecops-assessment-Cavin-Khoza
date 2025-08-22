@@ -3,14 +3,11 @@ FROM node:18-alpine AS builder
 
 WORKDIR /app
 
-# Copy package files from src/ directory and install dependencies
-COPY src/package*.json ./
+# Copy ALL files from the application directory
+COPY . .
+
+# Install dependencies and build
 RUN npm ci --omit=dev
-
-# Copy source code from src/ directory
-COPY src/ .
-
-# Build the React app
 RUN npm run build
 
 # Runtime stage
@@ -31,11 +28,7 @@ RUN addgroup -g 1001 -S appgroup && \
 
 USER appuser
 
-# Expose port 80 (nginx default)
 EXPOSE 80
 
-# Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:80 || exit 1
-
-# Nginx runs automatically
