@@ -99,4 +99,4 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
       - name: Success
-        run: echo "✅ All security checks passed! Deployment can proceed."
+        run: echo " All security checks passed! Deployment can proceed."
