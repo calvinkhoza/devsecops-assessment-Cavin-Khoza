@@ -101,11 +101,32 @@ Terraform code to provision a secure AWS S3 bucket for application logs. It impl
 - **Block 4:** 30 minutes (Terraform module writing)
 - **Documentation:** 15 minutes
 
+## Assumptions Made
+- AWS is the target cloud for the Terraform code.
+- Secrets would be managed via GitHub Secrets in a real scenario.
+
 ## Problems I Ran Into
 
-1.  **Gitleaks and Trivy exit with an error code if they find something**, which would break the script. I fixed this by catching those errors in my `run_cmd` function and still processing their output.
-2.  **The `container-scan` job kept running even if the `security-scan` job failed.** I fixed it by adding `needs: security-scan` to the job config.
-3.  **Making the container's filesystem read-only** broke the app. I learned about using `tmpfs` for `/tmp` and `/var/run` from an old blog post and it worked.
+**Challenge 1: Multi-Tool Output Standardization**
+
+Problem: Different security tools have varying output formats and exit codes
+Solution: Created unified orchestrator with consistent JSON output and failure handling
+
+**Challenge 2: Container Build Optimization**
+
+Problem: Large image sizes and build times
+Solution: Implemented multi-stage builds and Alpine base images
+
+**Challenge 3: Pipeline Dependency Management**
+
+Problem: Job dependencies and failure handling in GitHub Actions
+Solution: Structured pipeline with needs dependencies and fail-fast approach
+
+**AI Usage Disclosure**
+
+AI Tool Used: ChatGPT
+Purpose: Code structure review and documentation assistance
+Modifications: All code logic and security decisions were implemented manually. AI was used primarily for documentation formatting and best practice validation.Challenges & Solutions
 
 ## Tools I Used
 
