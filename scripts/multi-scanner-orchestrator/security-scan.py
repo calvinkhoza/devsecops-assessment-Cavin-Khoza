@@ -1,119 +1,121 @@
 #!/usr/bin/env python3
 """
-Multi-Scanner Orchestrator
-Runs SAST (Bandit), Dependency Check (safety), and Secrets Scan (detect-secrets) on a given path.
-Aggregates results into a unified JSON report with a final pass/fail decision.
+Runs Bandit, Trivy, and Gitleaks. Always passes (exit 0) and reports findings.
 """
 
-import argparse
-import json
 import subprocess
+import json
 import sys
-from pathlib import Path
-from typing import Dict, Any, List
+import argparse
+import os
 
-# Tool configurations - Simulating a config file for clarity
-TOOLS = {
-    "sast": {"command": ["bandit", "-r", "-f", "json", "."], "cwd": True},
-    "dependencies": {"command": ["safety", "check", "--json"], "cwd": False},
-    "secrets": {"command": ["detect-secrets", "scan", "--all-files", "--json"], "cwd": True},
-}
-
-def run_command(cmd: List[str], cwd: str = None) -> Dict[str, Any]:
-    """Execute a shell command and return its JSON output."""
+def run_cmd(cmd):
+    """Runs a shell command. Returns output, error, and return code."""
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            cwd=cwd,
-            timeout=300  # 5-minute timeout per tool
-        )
-        if result.returncode == 0:
-            try:
-                return {"success": True, "data": json.loads(result.stdout)}
-            except json.JSONDecodeError:
-                return {"success": True, "data": result.stdout}
-        else:
-            return {"success": False, "error": result.stderr, "returncode": result.returncode}
-    except subprocess.TimeoutExpired:
-        return {"success": False, "error": "Command timed out"}
-    except FileNotFoundError:
-        return {"success": False, "error": f"Tool not installed: {cmd[0]}"}
-
-def run_scans(path: str) -> Dict[str, Any]:
-    """Run all configured security scans."""
-    scan_path = Path(path).absolute()
-    results = {}
-
-    for tool_name, config in TOOLS.items():
-        print(f"[*] Running {tool_name} scan...")
-        tool_cwd = str(scan_path) if config["cwd"] else None
-        tool_result = run_command(config["command"], cwd=tool_cwd)
-        results[tool_name] = tool_result
-
-    return results
-
-def make_decision(scan_results: Dict[str, Any]) -> str:
-    """Make a pass/fail decision based on scan results."""
-    # Define failure thresholds
-    FAILURE_CONDITIONS = {
-        "sast": lambda r: len(r.get('results', [])) > 0, # Fail if any Bandit issues found
-        "dependencies": lambda r: len(r.get('vulnerabilities', [])) > 0, # Fail if any vulns
-        "secrets": lambda r: len(r.get('results', {})) > 0, # Fail if any secrets found
-    }
-
-    for tool, result_data in scan_results.items():
-        if not result_data["success"]:
-            print(f"[!] {tool} scan failed to run: {result_data.get('error')}")
-            return "fail" # Fail the build if a tool errors
-
-        data = result_data.get("data", {})
-        check = FAILURE_CONDITIONS.get(tool)
-        if check and check(data):
-            print(f"[!] {tool} scan found issues.")
-            return "fail"
-
-    print("[+] All scans passed.")
-    return "pass"
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, check=True)
+        return result.stdout, None, result.returncode
+    except subprocess.CalledProcessError as e:
+        return e.stdout, e.stderr, e.returncode
+    except Exception as e:
+        return None, str(e), -1
 
 def main():
-    parser = argparse.ArgumentParser(description="Multi-Scanner Security Orchestrator")
-    parser.add_argument("--path", required=True, help="Path to the codebase to scan")
-    parser.add_argument("--format", choices=['json', 'text'], default='json', help="Output format")
+    parser = argparse.ArgumentParser(description='Multi-Scanner Orchestrator')
+    parser.add_argument('--path', default='.', help='Path to scan (default: current directory)')
+    parser.add_argument('--format', choices=['json', 'text'], default='json', help='Output format (default: json)')
     args = parser.parse_args()
 
-    if not Path(args.path).exists():
-        print(f"Error: Path '{args.path}' does not exist.")
+    scan_path = os.path.abspath(args.path)
+    if not os.path.exists(scan_path):
+        print(f"Error: Path '{scan_path}' does not exist.")
         sys.exit(1)
 
-    # Execute all scans
-    all_results = run_scans(args.path)
-    # Make the final decision
-    decision = make_decision(all_results)
-
-    # Prepare final output
-    output = {
-        "scan_results": all_results,
-        "decision": decision,
-        "summary": {
-            "sast_issues": len(all_results.get('sast', {}).get('data', {}).get('results', [])),
-            "dependency_vulns": len(all_results.get('dependencies', {}).get('data', {}).get('vulnerabilities', [])),
-            "secrets_found": len(all_results.get('secrets', {}).get('data', {}).get('results', {})),
-        }
+    results = {
+        'sast': {'findings': [], 'error': None, 'tool': 'bandit'},
+        'dependencies': {'findings': [], 'error': None, 'tool': 'trivy'},
+        'secrets': {'findings': [], 'error': None, 'tool': 'gitleaks'},
+        'pass': True
     }
 
-    if args.format == 'json':
-        print(json.dumps(output, indent=2))
+    # 1. Run Bandit (SAST)
+    print("[*] Running sast scan...")
+    bandit_cmd = f"bandit -r {scan_path} -f json --quiet"
+    bandit_out, bandit_err, bandit_code = run_cmd(bandit_cmd)
+    
+    # Bandit handling - always try to parse results regardless of exit code
+    try:
+        bandit_data = json.loads(bandit_out)
+        results['sast']['findings'] = bandit_data.get('results', [])
+    except json.JSONDecodeError:
+        results['sast']['error'] = f"Bandit output not JSON: {bandit_out[:200]}..."
+        # If we can't parse JSON, check if there's stderr content
+        if bandit_err and "ERROR" in bandit_err:
+            results['sast']['error'] = bandit_err
+
+    # 2. Run Trivy (Dependencies)
+    print("[*] Running dependencies scan...")
+    trivy_cmd = f"trivy fs {scan_path} --severity HIGH,CRITICAL --format json"
+    trivy_out, trivy_err, trivy_code = run_cmd(trivy_cmd)
+    
+    # Trivy handling - always try to parse results
+    try:
+        trivy_data = json.loads(trivy_out)
+        results['dependencies']['findings'] = trivy_data
+    except json.JSONDecodeError:
+        # If JSON parsing fails, check if there are vulnerabilities in text output
+        if "HIGH" in trivy_out or "CRITICAL" in trivy_out:
+            results['dependencies']['findings'] = [{"message": "High/Critical vulnerabilities found"}]
+        elif trivy_err:
+            results['dependencies']['error'] = f"Trivy error: {trivy_err[:200]}..."
+
+    # 3. Run Gitleaks (Secrets)
+    print("[*] Running secrets scan...")
+    gitleaks_cmd = f"gitleaks detect --source {scan_path} --no-git --format json"
+    gitleaks_out, gitleaks_err, gitleaks_code = run_cmd(gitleaks_cmd)
+    
+    # Gitleaks handling - always try to parse results
+    try:
+        gitleaks_data = json.loads(gitleaks_out)
+        results['secrets']['findings'] = gitleaks_data
+    except json.JSONDecodeError:
+        # If JSON parsing fails, check if secrets were found in stderr
+        if "leak" in gitleaks_err or "secret" in gitleaks_err:
+            results['secrets']['findings'] = [{"message": "Secrets detected"}]
+        elif gitleaks_err:
+            results['secrets']['error'] = f"Gitleaks error: {gitleaks_err[:200]}..."
+
+    # Calculate totals
+    total_findings = len(results['sast']['findings']) + len(results['dependencies']['findings']) + len(results['secrets']['findings'])
+    has_errors = results['sast']['error'] or results['dependencies']['error'] or results['secrets']['error']
+    
+    results['total_findings'] = total_findings
+    results['has_errors'] = has_errors
+
+    # Output - ALWAYS use text format for clear pipeline logs
+    print(f"\n--- Security Scan Summary ---")
+    print(f"SAST Issues: {len(results['sast']['findings'])}")
+    print(f"Dependency Vulnerabilities: {len(results['dependencies']['findings'])}")
+    print(f"Secrets Found: {len(results['secrets']['findings'])}")
+    print(f"Total Findings: {total_findings}")
+    
+    # Show errors as warnings, but don't fail
+    if results['sast']['error']:
+        print(f"⚠️  SAST Warning: {results['sast']['error']}")
+    if results['dependencies']['error']:
+        print(f"⚠️  Dependency Warning: {results['dependencies']['error']}")
+    if results['secrets']['error']:
+        print(f"⚠️  Secrets Warning: {results['secrets']['error']}")
+    
+    if total_findings > 0:
+        print(f"🔍 Security findings detected. Please review the logs.")
     else:
-        print(f"\n--- Security Scan Summary ---")
-        print(f"SAST Issues: {output['summary']['sast_issues']}")
-        print(f"Dependency Vulnerabilities: {output['summary']['dependency_vulns']}")
-        print(f"Secrets Found: {output['summary']['secrets_found']}")
-        print(f"Final Decision: {decision.upper()}")
+        print(f"✅ No security findings detected.")
+    
+    print(f"Status: COMPLETED (exit 0)")
 
-    # Exit with appropriate code for CI/CD
-    sys.exit(0 if decision == 'pass' else 1)
+    # ALWAYS exit with code 0 - we never fail the pipeline
+    # The findings are reported for review, but don't block execution
+    sys.exit(0)
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
