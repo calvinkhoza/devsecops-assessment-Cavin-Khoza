@@ -11,6 +11,7 @@ RUN apt-get update && \
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
+# Copy requirements.txt from the current directory (application/)
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
@@ -18,7 +19,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Stage 2: Final Runtime Image
 FROM python:3.11-slim as runtime
 
-# Install curl for the healthcheck and remove the apt cache in a single layer to keep image small
+# Install curl for the healthcheck
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl && \
     rm -rf /var/lib/apt/lists/*
@@ -30,11 +31,15 @@ RUN groupadd -r appgroup && useradd -r -g appgroup appuser
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Set the working directory and ensure it's owned by appuser
+# Set the working directory
 WORKDIR /app
-RUN chown appuser:appgroup /app
+
+# Copy application code from the current build context (application/)
 COPY --chown=appuser:appgroup app.py .
 COPY --chown=appuser:appgroup src/ ./src/
+
+# Ensure the working directory is owned by the non-root user
+RUN chown -R appuser:appgroup /app
 
 # Switch to the non-root user
 USER appuser
@@ -42,7 +47,7 @@ USER appuser
 # Expose the port the app runs on
 EXPOSE 8080
 
-# Health check (now curl is available)
+# Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:8080/health || exit 1
 
